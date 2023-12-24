@@ -34,31 +34,55 @@ func NewOperation() *Operation {
 	}
 }
 
-// Refactor this shit 
-func (op *Operation) Exec(ctx context.Context, errChan chan error) {
+func (op *Operation) Exec(ctx context.Context) *pkg.Response {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(op.Timeout)*time.Second)
 	defer cancel()
 
+	response := make(chan pkg.Response)
+
+	go func() {
+		payload, err := op.fetch(ctx)
+		response <- pkg.Response{
+			Payload: payload,
+			Error:   err,
+		}
+	}()
+
+	for {
+		select {
+		case resp := <-response:
+			return &resp
+		case <-ctx.Done():
+			return &pkg.Response{
+				Payload: nil,
+				Error:   errors.New("timeout reached to operation http call"),
+			}
+		}
+	}
+}
+
+func (op *Operation) fetch(ctx context.Context) ([]byte, error) {
 	var bodyReader io.Reader
 
 	if op.Body != nil {
 		bodyReader, _ = op.Body.(io.Reader)
 	}
 
-	_, err := http.NewRequestWithContext(ctx, op.Method, op.URL, bodyReader)
+	response, err := http.NewRequestWithContext(ctx, op.Method, op.URL, bodyReader)
 
 	if err != nil {
-		errChan <- err
-		return
+		return nil, err
 	}
 
-	errChan <- nil
+	defer response.Body.Close()
 
-	select {
-	case <-ctx.Done():
-		errChan <- errors.New("reached timeout")
-		break
+	body, err := io.ReadAll(response.Body)
+
+	if err != nil {
+		return nil, err
 	}
+
+	return body, err
 }
 
 func (op *Operation) Wait() {
